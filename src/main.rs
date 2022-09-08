@@ -57,7 +57,10 @@ fn main() -> Result<(), Box<dyn Error>> {
       CommandInfo::Next => enigo.key_click(Key::RightArrow),
       CommandInfo::Prev => enigo.key_click(Key::LeftArrow),
       CommandInfo::Pause => enigo.key_click(Key::Space),
-      CommandInfo::Vol(t) => audio.setVol(t)?,
+      CommandInfo::Vol(t) => {
+        println!("Setting volume to {t}");
+        audio.setVol(t)?;
+      }
     }
   }
   stream.write_all(&[2])?;

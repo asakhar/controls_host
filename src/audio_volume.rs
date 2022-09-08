@@ -62,9 +62,9 @@ impl<'a> AudioEndpointVolume<'a> {
     let pEndptVol = unsafe { &mut *pEndptVol };
     let pDevice = unsafe { &mut *pDevice };
     let pEnumerator = unsafe { &mut *pEnumerator };
-    let min_db = min_db as f64;
-    let max_db = max_db as f64;
-    let step_db = step_db as f64;
+    let min_db = DeciBel(min_db as f64).into();
+    let max_db = DeciBel(max_db as f64).into();
+    let step_db = DeciBel(step_db as f64).into();
 
     Ok(Self {
       pEndptVol,
@@ -80,7 +80,7 @@ impl<'a> AudioEndpointVolume<'a> {
       || vol > 1.
       || unsafe {
         self.pEndptVol.SetMasterVolumeLevel(
-          (vol * (self.max_db - self.min_db) + self.min_db) as f32,
+          DeciBel::from(vol * (self.max_db - self.min_db) + self.min_db).0 as f32,
           ptr::null(),
         )
       } < 0
@@ -91,15 +91,28 @@ impl<'a> AudioEndpointVolume<'a> {
   }
   pub fn getVol(&self) -> AudioResult<f64> {
     let mut vol = 0.;
-    if unsafe { self.pEndptVol.GetMasterVolumeLevel(&mut vol) } < 0
-      || vol < self.min_db as f32
-      || vol > self.max_db as f32
-    {
+    if unsafe { self.pEndptVol.GetMasterVolumeLevel(&mut vol) } < 0 {
       return Err(AudioError::InitFailed);
     }
-    let vol = (vol as f64 - self.min_db) / (self.max_db - self.min_db);
+    let vol: f64 = DeciBel(vol as f64).into();
+    let vol = (vol - self.min_db) / (self.max_db - self.min_db);
 
     Ok(vol)
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+struct DeciBel(f64);
+
+impl From<DeciBel> for f64 {
+  fn from(db: DeciBel) -> Self {
+    10f64.powf(db.0 / 20.)
+  }
+}
+
+impl From<f64> for DeciBel {
+  fn from(db: f64) -> Self {
+    Self(20. * db.log10())
   }
 }
 
