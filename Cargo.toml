@@ -8,3 +8,7 @@ edition = "2021"
 [dependencies]
 enigo = "0.0.14"
 dotenv = "*"
+ctrlc = "3.2.3"
+[dependencies.winapi]
+version = "0.3.9"
+features = ["endpointvolume", "mmdeviceapi", "objbase", "guiddef"]
