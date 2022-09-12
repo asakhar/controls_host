@@ -1,11 +1,12 @@
 #![allow(non_snake_case)]
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, ptr};
 
 macro_rules! SAFE_RELEASE {
   ($punk: ident) => {{
     if let Some($punk) = unsafe { $punk.as_mut() } {
       unsafe {
-        $punk.Release();
+        let _ = $punk.Release();
       }
     }
     $punk = std::ptr::null_mut();
@@ -22,17 +23,19 @@ use winapi::{
   Class, Interface,
 };
 
-pub struct AudioEndpointVolume<'a> {
+use crate::utils::Lerpable;
+
+pub struct EndptVol<'a> {
   pEndptVol: &'a mut IAudioEndpointVolume,
   pEnumerator: &'a mut IMMDeviceEnumerator,
   pDevice: &'a mut IMMDevice,
-  min_db: f64,
-  max_db: f64,
+  min: DeciBel,
+  max: DeciBel,
   #[allow(dead_code)]
-  step_db: f64,
+  step: DeciBel,
 }
 
-impl<'a> AudioEndpointVolume<'a> {
+impl<'a> EndptVol<'a> {
   pub fn new() -> AudioResult<Self> {
     let mut pEndptVol: *mut IAudioEndpointVolume = ptr::null_mut();
     let mut pEnumerator: *mut IMMDeviceEnumerator = ptr::null_mut();
@@ -62,70 +65,133 @@ impl<'a> AudioEndpointVolume<'a> {
     let pEndptVol = unsafe { &mut *pEndptVol };
     let pDevice = unsafe { &mut *pDevice };
     let pEnumerator = unsafe { &mut *pEnumerator };
-    let min_db = DeciBel(min_db as f64).into();
-    let max_db = DeciBel(max_db as f64).into();
-    let step_db = DeciBel(step_db as f64).into();
+    let min = DeciBel(min_db as f64);
+    let max = DeciBel(max_db as f64);
+    let step = DeciBel(step_db as f64);
 
     Ok(Self {
       pEndptVol,
       pDevice,
       pEnumerator,
-      min_db,
-      max_db,
-      step_db,
+      min,
+      max,
+      step,
     })
   }
-  pub fn setVol(&mut self, vol: f64) -> AudioResult<()> {
-    if vol < 0.
-      || vol > 1.
-      || unsafe {
-        self.pEndptVol.SetMasterVolumeLevel(
-          DeciBel::from(vol * (self.max_db - self.min_db) + self.min_db).0 as f32,
-          ptr::null(),
-        )
-      } < 0
+  pub fn setVol(&mut self, vol: VolumeLevel) -> AudioResult<()> {
+    if unsafe {
+      self
+        .pEndptVol
+        .SetMasterVolumeLevel(vol.to_db(self.min, self.max).0 as f32, ptr::null())
+    } < 0
     {
-      return Err(AudioError::InitFailed);
+      return Err(AudioError::VolumeSetting);
     }
     Ok(())
   }
-  pub fn getVol(&self) -> AudioResult<f64> {
+  pub fn getVol(&self) -> AudioResult<DeciBel> {
     let mut vol = 0.;
     if unsafe { self.pEndptVol.GetMasterVolumeLevel(&mut vol) } < 0 {
-      return Err(AudioError::InitFailed);
+      return Err(AudioError::GetVolume);
     }
-    let vol: f64 = DeciBel(vol as f64).into();
-    let vol = (vol - self.min_db) / (self.max_db - self.min_db);
-
-    Ok(vol)
+    Ok(DeciBel(vol as f64))
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-struct DeciBel(f64);
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, PartialOrd)]
+pub struct DeciBel(f64);
 
-impl From<DeciBel> for f64 {
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, PartialOrd)]
+pub struct LinVolt(f64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum VolumeLevel {
+  Log(DeciBel),
+  Lin(LinVolt),
+  Frac(f64),
+}
+
+impl Display for DeciBel {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("{}db", self.0))
+  }
+}
+
+impl Display for LinVolt {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(format_args!("{}V", self.0))
+  }
+}
+
+impl Display for VolumeLevel {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match *self {
+      VolumeLevel::Log(n) => f.write_fmt(format_args!("{}", n)),
+      VolumeLevel::Lin(n) => f.write_fmt(format_args!("{}", n)),
+      VolumeLevel::Frac(n) => f.write_fmt(format_args!("{}", n)),
+    }
+  }
+}
+
+impl VolumeLevel {
+  pub fn to_db(self, min: DeciBel, max: DeciBel) -> DeciBel {
+    DeciBel(
+      match self {
+        VolumeLevel::Log(db) => db,
+        VolumeLevel::Lin(lv) => lv.into(),
+        VolumeLevel::Frac(frac) => {
+          LinVolt(frac.lerp(LinVolt::from(min).0, LinVolt::from(max).0)).into()
+        }
+      }
+      .0
+      .clamp(min.0, max.0),
+    )
+  }
+  pub fn to_linear(self, min: DeciBel, max: DeciBel) -> LinVolt {
+    LinVolt(
+      match self {
+        VolumeLevel::Log(db) => db.into(),
+        VolumeLevel::Lin(lv) => lv,
+        VolumeLevel::Frac(frac) => LinVolt(frac.lerp(LinVolt::from(min).0, LinVolt::from(max).0)),
+      }
+      .0
+      .clamp(LinVolt::from(min).0, LinVolt::from(max).0),
+    )
+  }
+  pub fn to_fraction(self, min: DeciBel, max: DeciBel) -> f64 {
+    match self {
+      VolumeLevel::Log(db) => LinVolt::from(db)
+        .0
+        .inv_lerp(LinVolt::from(min).0, LinVolt::from(max).0),
+      VolumeLevel::Lin(lv) => lv.0.inv_lerp(LinVolt::from(min).0, LinVolt::from(max).0),
+      VolumeLevel::Frac(frac) => frac,
+    }
+    .clamp(0., 1.)
+  }
+}
+
+impl From<LinVolt> for DeciBel {
+  fn from(lv: LinVolt) -> Self {
+    Self(20. * lv.0.log10())
+  }
+}
+
+impl From<DeciBel> for LinVolt {
   fn from(db: DeciBel) -> Self {
-    10f64.powf(db.0 / 20.)
+    Self(10f64.powf(db.0 / 20.))
   }
 }
 
-impl From<f64> for DeciBel {
-  fn from(db: f64) -> Self {
-    Self(20. * db.log10())
-  }
-}
-
-impl<'a> Drop for AudioEndpointVolume<'a> {
+impl<'a> Drop for EndptVol<'a> {
   fn drop(&mut self) {
     unsafe {
-      self.pEndptVol.Release();
+      let _ = self.pEndptVol.Release();
     }
     unsafe {
-      self.pDevice.Release();
+      let _ = self.pDevice.Release();
     }
     unsafe {
-      self.pEnumerator.Release();
+      let _ = self.pEnumerator.Release();
     }
     unsafe {
       CoUninitialize();
@@ -145,13 +211,15 @@ fn init_impl(
     return None;
   }
 
+  let ppEnumerator: *mut _ = pEnumerator;
+
   if unsafe {
     CoCreateInstance(
-      &MMDeviceEnumerator::uuidof() as *const _,
+      &MMDeviceEnumerator::uuidof(),
       ptr::null_mut(),
       1,
-      &IMMDeviceEnumerator::uuidof() as *const _,
-      pEnumerator as *mut _ as *mut _,
+      &IMMDeviceEnumerator::uuidof(),
+      ppEnumerator as *mut _,
     ) < 0
   } {
     return None;
@@ -166,12 +234,14 @@ fn init_impl(
     return None;
   }
 
+  let ppEndptVol: *mut _ = pEndptVol;
+
   if unsafe {
     pDevice.as_ref()?.Activate(
-      &IAudioEndpointVolume::uuidof() as *const _,
+      &IAudioEndpointVolume::uuidof(),
       CLSCTX_ALL,
       ptr::null_mut(),
-      pEndptVol as *mut _ as *mut _,
+      ppEndptVol as *mut _,
     ) < 0
   } {
     return None;
@@ -189,14 +259,18 @@ fn init_impl(
 
 #[derive(Debug, Clone, Copy)]
 pub enum AudioError {
-  InitFailed,
+  Initialization,
+  VolumeSetting,
+  GetVolume,
 }
 
 impl Display for AudioError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     use AudioError::*;
     f.write_str(match *self {
-      InitFailed => "initialization failed",
+      Initialization => "Initialization failed",
+      VolumeSetting => "Set volume failed",
+      GetVolume => "Get volume failed",
     })
   }
 }

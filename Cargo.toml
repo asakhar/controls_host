@@ -5,10 +5,16 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[dependencies.enigo]
+path = "enigo"
+features = ["with_serde"]
 [dependencies]
-enigo = "0.0.14"
 dotenv = "*"
 ctrlc = "3.2.3"
+serde_json = "1.0.85"
+[dependencies.serde]
+version = "1.0.144"
+features = ["derive"]
 [dependencies.winapi]
 version = "0.3.9"
 features = ["endpointvolume", "mmdeviceapi", "objbase", "guiddef"]
